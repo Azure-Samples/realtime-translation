@@ -8,9 +8,10 @@ import os
 import time
 import json
 import base64
+import asyncio
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable, Any
 
 from numpy import ndarray
 
@@ -26,14 +27,17 @@ import jinja2
 
 from orchestrator import logger
 
+from orchestrator.storage.cosmos import CosmosCRUD
+
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 JINJA_ENV = jinja2.Environment(loader=jinja2.FileSystemLoader(TEMPLATES_DIR))
 
-AZURE_OPENAI_API_KEY=os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_OPENAI_API_VERSION=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
-AZURE_OPENAI_ENDPOINT=os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_DEPLOYMENT=os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+FOUNDRY_KEY=os.getenv("FOUNDRY_KEY", "")
+FOUNDRY_MODEL_VERSION=os.getenv("FOUNDRY_MODEL_VERSION", "2025-08-28")
+FOUNDRY_ENDPOINT=os.getenv("FOUNDRY_INFERENCE_ENDPOINT", "")
+FOUNDRY_MODEL_ANALYSIS=os.getenv("FOUNDRY_MODEL_ANALYSIS", "")
+FOUNDRY_MODEL_REALTIME=os.getenv("FOUNDRY_MODEL_REALTIME", "")
 
 
 class AOAITranslationClient(ABC):
@@ -51,15 +55,16 @@ class AOAITranslationClient(ABC):
         """
         self.kernel = Kernel()
         self._raw_ws = AzureRealtimeWebsocket(
-            api_key=AZURE_OPENAI_API_KEY,
-            api_version=AZURE_OPENAI_API_VERSION,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            deployment_name=AZURE_OPENAI_DEPLOYMENT
-        )
+                api_key=FOUNDRY_KEY,
+                api_version=FOUNDRY_MODEL_VERSION,
+                azure_endpoint=FOUNDRY_ENDPOINT,
+                deployment_name=FOUNDRY_MODEL_REALTIME
+            )
         self.create_response: bool = False
         self.available = self._check_configuration()
-        self._websocket: WebSocket
-        self.settings: AzureRealtimeExecutionSettings
+        # runtime-initialised attributes
+        self._websocket: Optional[WebSocket] = None
+        self.settings: Optional[AzureRealtimeExecutionSettings] = None
         self.observer = observer
 
     def __call__(
@@ -92,6 +97,8 @@ class AOAITranslationClient(ABC):
 
     @property
     def ws(self) -> WebSocket:
+        if self._websocket is None:
+            raise ValueError("WebSocket not set on AOAITranslationClient")
         return self._websocket
 
     @ws.setter
@@ -101,10 +108,10 @@ class AOAITranslationClient(ABC):
     def _check_configuration(self) -> bool:
         """Verify required environment variables are set and log their values for debugging."""
         required_vars = [
-            ("AZURE_OPENAI_API_KEY", AZURE_OPENAI_API_KEY),
-            ("AZURE_OPENAI_ENDPOINT", AZURE_OPENAI_ENDPOINT),
-            ("AZURE_OPENAI_API_VERSION", AZURE_OPENAI_API_VERSION),
-            ("AZURE_OPENAI_DEPLOYMENT", AZURE_OPENAI_DEPLOYMENT),
+            ("FOUNDRY_KEY", FOUNDRY_KEY),
+            ("FOUNDRY_ENDPOINT", FOUNDRY_ENDPOINT),
+            ("FOUNDRY_MODEL_VERSION", FOUNDRY_MODEL_VERSION),
+            ("FOUNDRY_MODEL_REALTIME", FOUNDRY_MODEL_REALTIME),
         ]
         missing = [var for var, val in required_vars if not val]
         for var, val in required_vars:
@@ -161,7 +168,7 @@ class TranslateCommand(AOAITranslationClient):
         Raises:
             ValueError: If environment variables are missing.
         """
-        instruction_template = JINJA_ENV.get_template("interpreter.jinja")
+        instruction_template = JINJA_ENV.get_template("consignado.jinja")
         if self.available:
             self.settings = AzureRealtimeExecutionSettings(
                 instructions=instruction_template.render(
@@ -257,6 +264,28 @@ class TranslateCommand(AOAITranslationClient):
                 break
             logger.info("[TranslateCommand] Exiting _from_acs_to_realtime audio streaming loop.")
 
+
+@runtime_checkable
+class RealtimeSession(Protocol):
+    """Protocolo mínimo que o Invoker necessita.
+
+    Define ws como property com setter para ser compatível com classes que expõem
+    a conexão via @property. Implementações podem (ou não) possuir um websocket
+    de modelo (_raw_ws).
+    """
+
+    @property
+    def ws(self) -> WebSocket: ...  # noqa: D401
+
+    @ws.setter
+    def ws(self, websocket: WebSocket) -> None: ...
+
+    def configure(self, *args, **kwargs) -> None: ...  # noqa: D401
+    async def handle_realtime_messages(self): ...
+    async def _from_realtime_to_acs(self, *args, **kwargs): ...
+    async def _from_acs_to_realtime(self, *args, **kwargs): ...
+
+
 class Invoker:
     """Invoker context manager for running translation commands.
 
@@ -271,7 +300,7 @@ class Invoker:
 
     def __init__(
         self,
-        command: AOAITranslationClient,
+        command: RealtimeSession,
         create_response: bool = True,
         kernel: Optional[Kernel] = None
     ):
@@ -288,14 +317,22 @@ class Invoker:
 
     async def __aenter__(self):
         """Enter context: configure command and open websocket."""
-        self.command(create_response=self.create_response)
-        await self.command._raw_ws.__aenter__()
+        raw_ws = getattr(self.command, "_raw_ws", None)
+        if callable(getattr(self.command, "__call__", None)) and raw_ws is not None:
+            # preparar contexto do websocket de modelo
+            try:
+                self.command(self.create_response)  # type: ignore[call-arg]
+            except TypeError:
+                # fallback para assinatura nomeada
+                self.command(create_response=self.create_response)  # type: ignore[misc]
+            await raw_ws.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit context: cleanly close the websocket connection."""
-        if self.command:
-            await self.command._raw_ws.__aexit__(exc_type, exc_val, exc_tb)
+        raw_ws = getattr(self.command, "_raw_ws", None)
+        if raw_ws is not None:
+            await raw_ws.__aexit__(exc_type, exc_val, exc_tb)
 
     async def start(self) -> None:
         await self.command.ws.accept()
@@ -316,3 +353,170 @@ class Invoker:
             await ws.__aenter__()
         else:
             logger.debug("[Invoker] Websocket is already open; no action taken.")
+
+
+class SpeechTranscriptionClient:
+    """Cliente leve para consumir eventos de transcrição em tempo real do ACS.
+
+    Não depende de Azure OpenAI. Implementa somente o protocolo RealtimeSession.
+    """
+
+    def __init__(self, observer: Any | None = None, session_id: str | None = None):
+        self.observer = observer
+        self._session_id = session_id or "unknown"
+        self._websocket: Optional[WebSocket] = None
+        self.available = True  # manter semântica usada em outras partes
+
+    # Propriedade compatível com demais clientes
+    @property
+    def ws(self) -> WebSocket:
+        if self._websocket is None:
+            raise ValueError("WebSocket não definido em SpeechTranscriptionClient")
+        return self._websocket
+
+    @ws.setter
+    def ws(self, websocket: WebSocket):
+        self._websocket = websocket
+
+    # Métodos exigidos pelo protocolo
+    def configure(self, *_, **__):  # no-op
+        return
+
+    async def handle_realtime_messages(self):  # no-op (mantido por interface)
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+
+    async def _from_realtime_to_acs(self, *_, **__):  # não aplicável
+        return
+
+    async def _from_acs_to_realtime(self, *_, **__):
+        """Loop principal: recebe mensagens do ACS e processa eventos de transcrição.
+
+        Apenas eventos finais são persistidos; parciais são ignorados.
+        """
+        logger.info("[SpeechTranscriptionClient] Iniciando recepção de eventos de transcrição.")
+        idle_timeout_sec = None
+        try:
+            idle_timeout_env = os.getenv("TRANSCRIPTION_IDLE_TIMEOUT_SEC")
+            if idle_timeout_env:
+                idle_timeout_sec = max(5, int(idle_timeout_env))
+        except Exception:
+            idle_timeout_sec = None
+
+        last_activity = time.time()
+        processed = 0
+        finals = 0
+        skipped = 0
+        errors = 0
+
+        try:
+            while True:
+                try:
+                    msg = await self.ws.receive()
+                except asyncio.TimeoutError:
+                    logger.warning(f"[SpeechTranscriptionClient] Idle timeout reached ({idle_timeout_sec}s) without frames; continuing to wait.")
+                    continue
+                except Exception as rx:
+                    errors += 1
+                    logger.info(f"[SpeechTranscriptionClient] WebSocket encerrado ou erro de recepção: {rx}")
+                    break
+
+                last_activity = time.time()
+                setattr(self.ws, "last_activity", last_activity)
+                payload: dict | None = None
+
+                # 1. If ACS sent a wrapper with 'text'
+                txt = msg.get("text") if isinstance(msg, dict) else None
+                if isinstance(txt, str):
+                    raw_txt = txt.strip()
+                    if raw_txt.startswith("{") and raw_txt.endswith("}"):
+                        try:
+                            payload = json.loads(raw_txt)
+                        except Exception:
+                            skipped += 1
+                            continue
+                        # Some ACS frames double-encode JSON under 'text'
+                        if isinstance(payload, str) and payload.strip().startswith('{'):
+                            try:
+                                payload = json.loads(payload)
+                            except Exception:
+                                skipped += 1
+                                continue
+                    else:
+                        skipped += 1
+                        continue
+                else:
+                    if isinstance(msg, dict):
+                        payload = msg
+                    else:
+                        skipped += 1
+                        continue
+
+                if not isinstance(payload, dict):
+                    skipped += 1
+                    continue
+
+                kind = (payload.get("kind") or payload.get("Kind") or "").lower()
+                if kind == "transcriptionmetadata":
+                    # Log minimal metadata; could store if observer exposed (left simple here)
+                    meta = payload.get("transcriptionMetadata") or {}
+                    logger.info(
+                        "[SpeechTranscriptionClient] Metadata subscriptionId=%s locale=%s locales=%s",
+                        meta.get("subscriptionId"), meta.get("locale"), meta.get("locales")
+                    )
+                    processed += 1
+                    continue
+                if kind == "transcriptiondata":
+                    try:
+                        final = await self._handle_transcription_event(payload)
+                        processed += 1
+                        if final:
+                            finals += 1
+                    except Exception as h_err:
+                        errors += 1
+                        logger.error(f"[SpeechTranscriptionClient] Erro ao processar evento de transcrição: {h_err}")
+                    continue
+                # Not a recognized transcription frame
+                skipped += 1
+        finally:
+            logger.info(
+                f"[SpeechTranscriptionClient] Loop encerrado. processed={processed} finals={finals} skipped={skipped} errors={errors} idle_timeout_sec={idle_timeout_sec}"
+            )
+
+    async def _handle_transcription_event(self, payload: dict) -> bool:
+        result = payload.get("result") or payload.get("Result") or {}
+        transcript_text = (result.get("text") or result.get("Text") or "").strip()
+        if not transcript_text:
+            return False
+
+        result_type = (result.get("type") or result.get("Type") or "").lower()
+        if result_type and result_type != "final":
+            return False
+
+        participant_id = (
+            result.get("participantId")
+            or result.get("participant")
+            or result.get("ParticipantId")
+            or "unknown"
+        )
+        sentiment = result.get("sentiment") or result.get("Sentiment")
+        doc = {
+            "sessionId": self._session_id,
+            "timestamp": int(time.time() * 1000),
+            "participantId": participant_id,
+            "transcript": transcript_text,
+            "type": result_type or "final",
+            "sentiment": sentiment,
+            "source": "acs-realtime",
+        }
+        try:
+            crud = CosmosCRUD('COSMOS_TRANSCRIPTS_DATABASE')
+            await crud.create_item(doc)
+            logger.debug("[SpeechTranscriptionClient] Transcrição final persistida (%s).", participant_id)
+            return True
+        except Exception as e:
+            logger.error(f"[SpeechTranscriptionClient] Falha ao persistir transcrição: {e}")
+            return False

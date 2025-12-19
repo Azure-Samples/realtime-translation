@@ -35,21 +35,18 @@ export default function Home() {
 
   return (
     <main className="h-screen flex flex-col items-center justify-center bg-gradient-to-b from-blue-50 to-white">
-      <h1 className="text-4xl font-bold mb-8 text-blue-700">Azure Real-time Conversation Room</h1>
+      <h1 className="text-4xl font-bold mb-8 text-blue-700">Entrevistas com IA</h1>
       
       <div className="w-full max-w-md p-8 bg-white rounded-lg shadow-lg border border-blue-100">
         <form onSubmit={handleJoinRoom} className="space-y-6">
           <div>
-            <label htmlFor="roomId" className="block text-sm font-medium text-gray-700 mb-1">
-              Enter Session Name
-            </label>
             <input
               type="text"
               id="roomId"
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
               className="block w-full px-4 py-3 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-              placeholder="my-session"
+              placeholder="Entre com o ID da entrevista"
               required
             />
           </div>
@@ -59,7 +56,7 @@ export default function Home() {
             className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150"
             disabled={isLoading}
           >
-            {isLoading ? 'Joining...' : 'Join as Guest'}
+            {isLoading ? 'Joining...' : 'Entrar como convidado'}
           </button>
         </form>
 
@@ -70,18 +67,21 @@ export default function Home() {
         <div className="mt-8 grid grid-cols-2 gap-4">
           <Link href="/signup" className="block">
             <button className="w-full py-3 px-4 bg-green-500 text-white rounded-md hover:bg-green-600 transition duration-150">
-              Sign Up
+              Inscreva-se
             </button>
           </Link>
           <Link href="/signin" className="block">
             <button className="w-full py-3 px-4 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition duration-150">
-              Sign In
+              Entrar
             </button>
           </Link>
         </div>
-        
-        <div className="mt-6 text-center text-sm text-gray-500">
-          <p>Azure-powered real-time translation service</p>
+        <div className="mt-4">
+          <Link href="/interview-analysis" className="block">
+            <button className="w-full py-3 px-4 bg-red-600 text-white rounded-md hover:bg-red-700 transition duration-150 font-medium shadow">
+              Ver Análises de Entrevistas
+            </button>
+          </Link>
         </div>
       </div>
     </main>

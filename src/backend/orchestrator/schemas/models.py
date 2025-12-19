@@ -114,3 +114,16 @@ class CallConnectionInfo(BaseModel):
     bot_id: Optional[str] = None
     media_streaming_subscription: Optional[str] = None
     last_event_data: Optional[dict] = None
+    transcription_failed: bool = False
+    transcription_error_code: Optional[int] = None
+    transcription_error_subcode: Optional[int] = None
+    transcription_error_message: Optional[str] = None
+    transcription_status_details: Optional[str] = None
+    transcription_last_failure_time: Optional[int] = None  # epoch ms
+    transcription_metadata: Optional[dict] = None
+    # Deferred transcription start lifecycle tracking
+    transcription_start_requested: bool = False
+    transcription_started: bool = False
+    transcription_start_attempts: int = 0
+    transcription_last_start_error: Optional[str] = None
+    transcription_last_start_time: Optional[int] = None  # epoch ms of last attempt

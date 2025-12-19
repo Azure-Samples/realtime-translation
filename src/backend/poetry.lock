@@ -414,6 +414,81 @@ files = [
 ]
 
 [[package]]
+name = "azure-ai-agents"
+version = "1.2.0b3"
+description = "Microsoft Corporation Azure AI Agents Client Library for Python"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "azure_ai_agents-1.2.0b3-py3-none-any.whl", hash = "sha256:fec3e92fac5de2c18dee2d4def734825c2a4880bee39b3c237a7ad8079bfa8a7"},
+    {file = "azure_ai_agents-1.2.0b3.tar.gz", hash = "sha256:440d7fca98c0b13654a57dcd159cdf64d1024f9baacd1a4354ce91a290d3741e"},
+]
+
+[package.dependencies]
+azure-core = ">=1.30.0"
+isodate = ">=0.6.1"
+typing-extensions = ">=4.6.0"
+
+[[package]]
+name = "azure-ai-inference"
+version = "1.0.0b9"
+description = "Microsoft Azure AI Inference Client Library for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "azure_ai_inference-1.0.0b9-py3-none-any.whl", hash = "sha256:49823732e674092dad83bb8b0d1b65aa73111fab924d61349eb2a8cdc0493990"},
+    {file = "azure_ai_inference-1.0.0b9.tar.gz", hash = "sha256:1feb496bd84b01ee2691befc04358fa25d7c344d8288e99364438859ad7cd5a4"},
+]
+
+[package.dependencies]
+azure-core = ">=1.30.0"
+isodate = ">=0.6.1"
+typing-extensions = ">=4.6.0"
+
+[package.extras]
+opentelemetry = ["azure-core-tracing-opentelemetry"]
+prompts = ["pyyaml"]
+
+[[package]]
+name = "azure-ai-projects"
+version = "1.1.0b3"
+description = "Microsoft Azure AI Projects Client Library for Python"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "azure_ai_projects-1.1.0b3-py3-none-any.whl", hash = "sha256:6149e5b17f4cbd467eec812ae9b335be48b7e856d886e49c1c0cd55385a5fa78"},
+    {file = "azure_ai_projects-1.1.0b3.tar.gz", hash = "sha256:f18397de1456e315c592e708a0c4af00d6b52f646f2d199b2f99554e8236d495"},
+]
+
+[package.dependencies]
+azure-ai-agents = ">=1.2.0b3"
+azure-core = ">=1.30.0"
+azure-storage-blob = ">=12.15.0"
+isodate = ">=0.6.1"
+typing-extensions = ">=4.12.2"
+
+[[package]]
+name = "azure-ai-textanalytics"
+version = "5.3.0"
+description = "Microsoft Azure Text Analytics Client Library for Python"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "azure-ai-textanalytics-5.3.0.zip", hash = "sha256:4f7d067d5bb08422599ca6175510d39b0911c711301647e5f18e904a5027bf58"},
+    {file = "azure_ai_textanalytics-5.3.0-py3-none-any.whl", hash = "sha256:69bb736d93de81060e9075d42b6f0b92c25be0fb106da5cb6a6d30e772168221"},
+]
+
+[package.dependencies]
+azure-common = ">=1.1,<2.0"
+azure-core = ">=1.24.0,<2.0.0"
+isodate = ">=0.6.1,<1.0.0"
+typing-extensions = ">=4.0.1"
+
+[[package]]
 name = "azure-cognitiveservices-speech"
 version = "1.44.0"
 description = "Microsoft Cognitive Services Speech SDK for Python"
@@ -431,6 +506,18 @@ files = [
 
 [package.dependencies]
 azure-core = ">=1.31.0"
+
+[[package]]
+name = "azure-common"
+version = "1.1.28"
+description = "Microsoft Azure Client Library for Python (Common)"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "azure-common-1.1.28.zip", hash = "sha256:4ac0cd3214e36b6a1b6a442686722a5d8cc449603aa833f3f0f40bda836704a3"},
+    {file = "azure_common-1.1.28-py2.py3-none-any.whl", hash = "sha256:5c12d3dcf4ec20599ca6b0d3e09e86e146353d443e7fcc050c9a19c1f9df20ad"},
+]
 
 [[package]]
 name = "azure-communication-callautomation"
@@ -503,6 +590,22 @@ aio = ["aiohttp (>=3.0)"]
 tracing = ["opentelemetry-api (>=1.26,<2.0)"]
 
 [[package]]
+name = "azure-cosmos"
+version = "4.9.0"
+description = "Microsoft Azure Cosmos Client Library for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "azure_cosmos-4.9.0-py3-none-any.whl", hash = "sha256:3b60eaa01a16a857d0faf0cec304bac6fa8620a81bc268ce760339032ef617fe"},
+    {file = "azure_cosmos-4.9.0.tar.gz", hash = "sha256:c70db4cbf55b0ff261ed7bb8aa325a5dfa565d3c6eaa43d75d26ae5e2ad6d74f"},
+]
+
+[package.dependencies]
+azure-core = ">=1.30.0"
+typing-extensions = ">=4.6.0"
+
+[[package]]
 name = "azure-eventgrid"
 version = "4.21.0"
 description = "Microsoft Azure Event Grid Client Library for Python"
@@ -537,6 +640,27 @@ cryptography = ">=2.5"
 msal = ">=1.30.0"
 msal-extensions = ">=1.2.0"
 typing-extensions = ">=4.0.0"
+
+[[package]]
+name = "azure-storage-blob"
+version = "12.26.0"
+description = "Microsoft Azure Blob Storage Client Library for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "azure_storage_blob-12.26.0-py3-none-any.whl", hash = "sha256:8c5631b8b22b4f53ec5fff2f3bededf34cfef111e2af613ad42c9e6de00a77fe"},
+    {file = "azure_storage_blob-12.26.0.tar.gz", hash = "sha256:5dd7d7824224f7de00bfeb032753601c982655173061e242f13be6e26d78d71f"},
+]
+
+[package.dependencies]
+azure-core = ">=1.30.0"
+cryptography = ">=2.1.4"
+isodate = ">=0.6.1"
+typing-extensions = ">=4.6.0"
+
+[package.extras]
+aio = ["azure-core[aio] (>=1.30.0)"]
 
 [[package]]
 name = "babel"
@@ -3289,6 +3413,26 @@ jsonschema = ">=4.18.0,<5.0.0"
 jsonschema-path = ">=0.3.1,<0.4.0"
 lazy-object-proxy = ">=1.7.1,<2.0.0"
 openapi-schema-validator = ">=0.6.0,<0.7.0"
+
+[[package]]
+name = "opencv-python"
+version = "4.12.0.88"
+description = "Wrapper package for OpenCV python bindings."
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "opencv-python-4.12.0.88.tar.gz", hash = "sha256:8b738389cede219405f6f3880b851efa3415ccd674752219377353f017d2994d"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-macosx_13_0_arm64.whl", hash = "sha256:f9a1f08883257b95a5764bf517a32d75aec325319c8ed0f89739a57fae9e92a5"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-macosx_13_0_x86_64.whl", hash = "sha256:812eb116ad2b4de43ee116fcd8991c3a687f099ada0b04e68f64899c09448e81"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:51fd981c7df6af3e8f70b1556696b05224c4e6b6777bdd2a46b3d4fb09de1a92"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:092c16da4c5a163a818f120c22c5e4a2f96e0db4f24e659c701f1fe629a690f9"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-win32.whl", hash = "sha256:ff554d3f725b39878ac6a2e1fa232ec509c36130927afc18a1719ebf4fbf4357"},
+    {file = "opencv_python-4.12.0.88-cp37-abi3-win_amd64.whl", hash = "sha256:d98edb20aa932fd8ebd276a72627dad9dc097695b3d435a4257557bbb49a79d2"},
+]
+
+[package.dependencies]
+numpy = {version = ">=2,<2.3.0", markers = "python_version >= \"3.9\""}
 
 [[package]]
 name = "opentelemetry-api"
@@ -6240,4 +6384,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <4.0"
-content-hash = "5e649143035efcf26aec4c2d023102f694231005a0e7ee1ccc62b77b5ede839b"
+content-hash = "1e356e1e7e73c72595a26f0d4edc90285b52684e7ed9b4ade29aa3a574015592"

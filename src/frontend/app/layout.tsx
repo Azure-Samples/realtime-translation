@@ -17,18 +17,11 @@ export const metadata: Metadata = {
   description: 'Real-time voice & video chat with live AI transcription/translation'
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+// We keep RootLayout minimalist; per-page headers handled inside pages/components.
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen`}>{children}</body>
     </html>
   );
 }

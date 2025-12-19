@@ -10,11 +10,18 @@ from abc import ABC, abstractmethod
 
 import os
 import uuid
+import asyncio
+from asyncio import sleep as _async_sleep
 
 from urllib.parse import urlencode
-from typing import Dict, Set, Any, Optional
+from typing import Any, Optional
 
-from azure.communication.callautomation import CallAutomationClient, MediaStreamingOptions
+from azure.communication.callautomation import (
+    CallAutomationClient,
+    MediaStreamingOptions,
+    TranscriptionOptions,
+    TranscriptionTransportType
+)
 from azure.communication.rooms import RoomsClient, RoomParticipant, ParticipantRole
 from azure.communication.identity import CommunicationIdentityClient
 from azure.eventgrid import EventGridEvent, SystemEventNames
@@ -26,8 +33,9 @@ from orchestrator import logger
 
 
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
-CALLBACK_URI = os.environ.get("CALLBACK_EVENTS_URI", "https://svd8j22b-9000.brs.devtunnels.ms/callbacks")
-WEBSOCKET_URI = os.environ.get('WEBSOCKET_EVENTS_URI', 'wss://svd8j22b-9000.brs.devtunnels.ms/ws')
+CALLBACK_URI = os.environ.get("CALLBACK_EVENTS_URI", "https://v6hw08k2-9000.brs.devtunnels.ms/callbacks")
+WEBSOCKET_URI = os.environ.get('WEBSOCKET_EVENTS_URI', 'wss://v6hw08k2-9000.brs.devtunnels.ms/transcript-ws')
+FOUNDRY_SPEECH_ENDPOINT = os.environ.get('FOUNDRY_SPEECH_ENDPOINT', '')
 
 
 class Subject(ABC):
@@ -95,12 +103,12 @@ class RoomUserObserver(Subject):
     """
 
     def __init__(self):
-        self._observers: Set[Observer] = set()
-        self._rooms: Dict[str, Set[str]] = {}
-        self._user_room: Dict[str, str] = {}
-        self._user_info: Dict[str, Dict[str, Any]] = {}
-        self._call_connections: Dict[str, CallConnectionInfo] = {}
-        self._invokers: Dict[str, Invoker] = {}
+        self._observers: set[Observer] = set()
+        self._rooms: dict[str, set[str]] = {}
+        self._user_room: dict[str, str] = {}
+        self._user_info: dict[str, dict[str, Any]] = {}
+        self._call_connections: dict[str, CallConnectionInfo] = {}
+        self._invokers: dict[str, Invoker] = {}
         acs_conn_str = os.environ.get("ACS_CONNECTION_STRING", "")
         self.acs_client = CallAutomationClient.from_connection_string(acs_conn_str)
         self.identity_client = CommunicationIdentityClient.from_connection_string(acs_conn_str)
@@ -156,7 +164,6 @@ class RoomUserObserver(Subject):
         # Ensure websocket is open before returning invoker
         # (This is the new logic: try to re-open if closed)
         # This is safe to call even if already open
-        import asyncio
         try:
             # If not in an event loop, schedule open_if_closed
             loop = asyncio.get_event_loop()
@@ -193,14 +200,14 @@ class RoomUserObserver(Subject):
         """Retrieve the Invoker for a given call connection ID."""
         return self._invokers.get(call_connection_id)
 
-    async def handle_incoming_call(self, event_dict):
+    async def handle_incoming_call(self, event_dict, enable_transcription: bool = True, enable_media: bool = False):
         """Handles EventGrid events for ACS incoming calls using the ACS SDK."""
         event = EventGridEvent.from_dict(event_dict)
         match event.event_type:
             case SystemEventNames.EventGridSubscriptionValidationEventName:
                 return self._handle_subscription_validation(event)
             case 'Microsoft.Communication.CallStarted':
-                return await self._handle_acs_incoming_call(event)
+                return await self._handle_acs_incoming_call(event, enable_transcription=enable_transcription, enable_media=enable_media)
             case _:
                 self.notify('incoming_call_unhandled', {"event": event_dict})
                 return None
@@ -210,43 +217,46 @@ class RoomUserObserver(Subject):
         validation_code = event.data["validationCode"]
         return {"validationResponse": validation_code}
 
-    async def _handle_acs_incoming_call(self, event):
-        """Handle ACS incoming call event."""
+    async def _handle_acs_incoming_call(self, event, enable_transcription: bool = True, enable_media: bool = False):
+        """Handle ACS incoming call event with selectable modes."""
         caller_id = event.data["startedBy"]["communicationIdentifier"]["rawId"]
         room_id = event.data["room"]["id"]
         guid = uuid.uuid4()
         callback_uri, websocket_url = self._build_callback_uris(caller_id, guid)
         if not self.acs_client:
             raise RuntimeError("ACS client not initialized. Set AZURE_COMMUNICATION_CONNECTION_STRING.")
-        try:
-            media_streaming_options = MediaStreamingOptions(
-                transport_url=websocket_url,
-                transport_type="websocket",
-                content_type="audio",
-                audio_channel_type="mixed",
-                start_media_streaming=True,
-                enable_bidirectional=True,
-                audio_format="pcm16KMono"
-            )  #type: ignore
-            answer_call_result = self.acs_client.connect_call(
-                room_id=room_id,
-                operation_context="incomingCall",
-                callback_url=callback_uri,
-                media_streaming=media_streaming_options,
-            )
 
+        # Conflict resolution: prefer transcription if both requested
+        chosen_mode = None
+        if enable_transcription and enable_media:
+            logger.warning("Both transcription and media streaming requested; preferring transcription to avoid known conflicts (8523).")
+            enable_media = False
+        try:
+            if enable_transcription:
+                answer_call_result = self._connect_call_transcription(room_id, callback_uri, websocket_url)
+                chosen_mode = "transcription"
+            elif enable_media:
+                answer_call_result = self._connect_call_media_streaming(room_id, callback_uri, websocket_url)
+                chosen_mode = "media"
+            else:
+                # Fallback: at least establish call without extra streaming features
+                logger.info("No transcription or media streaming requested. Connecting call with minimal configuration.")
+                answer_call_result = self.acs_client.connect_call(
+                    room_id=room_id,
+                    operation_context="incomingCall",
+                    callback_url=callback_uri
+                )
+                chosen_mode = "basic"
         except Exception as e:
-            logger.error(f"Failed to answer ACS call: {e}")
+            logger.error(f"Failed to answer ACS call ({caller_id} -> room {room_id}): {e}")
             raise RuntimeError(f"Failed to answer ACS call: {e}")
 
         call_connection_id = answer_call_result.call_connection_id
-
         if not call_connection_id:
             logger.error("Failed to answer ACS call, no call_connection_id returned.")
             raise RuntimeError("Failed to answer ACS call, no call_connection_id returned.")
 
         bot_info = {"display_name": "Interpreter", "language": "en"}
-
         self._call_connections[call_connection_id] = CallConnectionInfo(**{
             "caller_id": caller_id,
             "room_id": room_id,
@@ -254,17 +264,55 @@ class RoomUserObserver(Subject):
             "websocket_url": websocket_url,
             "call_connection_id": answer_call_result.call_connection_id,
             "bot_display_name": bot_info["display_name"],
-            "bot_language": bot_info["language"]
+            "bot_language": bot_info["language"],
+            # Mark that we intend to start transcription if transcription mode was enabled
+            "transcription_start_requested": enable_transcription,
+            "transcription_started": False
         })
-
+        logger.info(f"Incoming call answered mode={chosen_mode} call_connection_id={call_connection_id} transcription={enable_transcription} media={enable_media}")
         self.notify('incoming_call', self._call_connections[call_connection_id].model_dump())
         return self._call_connections[call_connection_id]
+
+    def _connect_call_transcription(self, room_id: str, callback_uri: str, websocket_url: str):
+        transcription_options = TranscriptionOptions(
+            transport_url=websocket_url,
+            transport_type=TranscriptionTransportType.WEBSOCKET,
+            locale="en-US",
+            start_transcription=False  # we will explicitly invoke start after connect
+        )
+        connect_result = self.acs_client.connect_call(
+            room_id=room_id,
+            operation_context="incomingCall",
+            callback_url=callback_uri,
+            transcription=transcription_options,
+            cognitive_services_endpoint=FOUNDRY_SPEECH_ENDPOINT or None
+        )
+        # Defer explicit start until CallConnected event to avoid 8501 (call not Established)
+        return connect_result
+
+    def _connect_call_media_streaming(self, room_id: str, callback_uri: str, websocket_url: str):
+        media_streaming_options = MediaStreamingOptions(
+            transport_url=websocket_url,
+            transport_type="websocket",
+            content_type="audio",
+            audio_channel_type="unmixed",
+            start_media_streaming=True,
+            enable_bidirectional=False,
+            audio_format="pcm16KMono"
+        )  # type: ignore
+        return self.acs_client.connect_call(
+            room_id=room_id,
+            operation_context="incomingCall",
+            callback_url=callback_uri,
+            media_streaming=media_streaming_options
+        )
 
     def _build_callback_uris(self, caller_id, guid):
         """Build callback and websocket URIs for ACS call answer."""
         query_parameters = urlencode({"callerId": caller_id})
         callback_uri = f"{CALLBACK_URI}/{guid}?{query_parameters}"
-        websocket_url = WEBSOCKET_URI
+        # Provide a per-call unique websocket URL (query token) so simultaneous calls don't collide
+        websocket_url = f"{WEBSOCKET_URI}?cid={guid}"
         return callback_uri, websocket_url
 
     async def handle_callback_event(self, event):
@@ -276,6 +324,10 @@ class RoomUserObserver(Subject):
         match event_type:
             case "Microsoft.Communication.CallConnected":
                 await self._handle_call_connected(event_data, call_connection_id)
+            case "Microsoft.Communication.CallDisconnected":
+                await self._handle_call_disconnected(event_data, call_connection_id)
+            case "Microsoft.Communication.TranscriptionFailed":
+                await self._handle_transcription_failed(event_data, call_connection_id)
             case "Microsoft.Communication.MediaStreamingStarted":
                 await self._handle_media_streaming_started(event_data, call_connection_id)
             case "Microsoft.Communication.MediaStreamingStopped":
@@ -301,6 +353,7 @@ class RoomUserObserver(Subject):
 
                 self._call_connections[call_connection_id].last_event_data = event_data
                 self._call_connections[call_connection_id].media_streaming_subscription = media_streaming_subscription
+                call_connection.start_transcription()
 
                 call_info = self._call_connections.get(call_connection_id, None)
 
@@ -310,27 +363,58 @@ class RoomUserObserver(Subject):
 
                 bot_info = {'display_name': call_info.bot_display_name, 'language': call_info.bot_language}  #type: ignore
                 logger.info(f"bot_info for call_connection_id={call_connection_id}: {bot_info}")
-
-                # Do NOT register invoker here anymore
                 self.join_bot_to_acs_call(call_connection_id, bot_info)
+                # Attempt deferred transcription start if it was requested and not yet started
+                if call_info and getattr(call_info, 'transcription_start_requested', False) and not getattr(call_info, 'transcription_started', False):
+                    asyncio.create_task(self._attempt_transcription_start(call_connection_id))
             except Exception as e:
                 logger.error(f"Failed to get call properties for {call_connection_id}: {e}")
 
     async def _handle_media_streaming_started(self, event_data, call_connection_id):
-        # Only log, do not register invoker here anymore
         logger.info(f"Media streaming started for call_connection_id={call_connection_id}")
         logger.info(f"Event data:\n {event_data} ")
 
     async def _handle_media_streaming_stopped(self, event_data, call_connection_id):
         logger.info(f"Media streaming stopped for call_connection_id={call_connection_id}")
         logger.info(f"Event data:\n {event_data} ")
-        # Do NOT unregister invoker here anymore
         if not call_connection_id in self._call_connections:
             logger.warning(f"Call connection {call_connection_id} not found in active connections.")
 
     async def _handle_media_streaming_failed(self, event_data, call_connection_id):
         logger.error(f"Media streaming failed for call_connection_id={call_connection_id}")
         logger.info(f"Event data:\n {event_data} ")
+
+    async def _handle_transcription_failed(self, event_data, call_connection_id):
+        logger.warning(f"Transcription failed for call_connection_id={call_connection_id}")
+        info = self._call_connections.get(call_connection_id)
+        if info:
+            result_info = event_data.get('resultInformation', {})
+            status_details = (event_data.get('transcriptionUpdate') or {}).get('transcriptionStatusDetails')
+            import time as _t
+            info.transcription_failed = True
+            info.transcription_error_code = result_info.get('code')
+            info.transcription_error_subcode = result_info.get('subCode')
+            info.transcription_error_message = result_info.get('message')
+            info.transcription_status_details = status_details
+            info.transcription_last_failure_time = int(_t.time() * 1000)
+            self._call_connections[call_connection_id] = info
+        logger.error(
+            f"[TranscriptionFailed] call_connection_id={call_connection_id} code={event_data.get('resultInformation', {}).get('code')} "
+            f"subCode={event_data.get('resultInformation', {}).get('subCode')} "
+            f"statusDetails={(event_data.get('transcriptionUpdate') or {}).get('transcriptionStatusDetails')}"
+        )
+
+    async def _handle_call_disconnected(self, event_data, call_connection_id):
+        logger.warning(f"Call disconnected for call_connection_id={call_connection_id}")
+        # attempt cleanup of any invoker (translation) resources
+        try:
+            await self.cleanup_invoker(call_connection_id)
+        except Exception as e:
+            logger.error(f"Error during invoker cleanup on disconnect ({call_connection_id}): {e}")
+        # remove call connection info
+        if call_connection_id in self._call_connections:
+            self._call_connections.pop(call_connection_id, None)
+        logger.info(f"Resources released for call_connection_id={call_connection_id}")
 
     async def _handle_participant_updated(self, event_data, call_connection_id):
         call_data = self._call_connections.get(call_connection_id)
@@ -348,6 +432,52 @@ class RoomUserObserver(Subject):
 
     def _handle_callback_event_default(self, event_type, event_data, call_connection_id):
         logger.warning(f"Unhandled ACS callback event: {event_type} for call_connection_id={call_connection_id}")
+        # Some events may signal readiness; optionally attempt transcription start if still pending
+        if call_connection_id and event_type.endswith("ParticipantsUpdated"):
+            info = self._call_connections.get(call_connection_id)
+            if info and info.transcription_start_requested and not info.transcription_started:
+                asyncio.create_task(self._attempt_transcription_start(call_connection_id))
+
+    async def _attempt_transcription_start(self, call_connection_id: str, max_retries: int = 5, backoff: float = 1.0):
+        """Attempt to start transcription with retry/backoff if call not yet Established.
+
+        Handles 8501 (Action invalid when call is not in Established state) by retrying
+        with exponential backoff up to max_retries. Marks state fields in CallConnectionInfo.
+        """
+        info = self._call_connections.get(call_connection_id)
+        if not info:
+            logger.error(f"Cannot attempt transcription start; no CallConnectionInfo for {call_connection_id}")
+            return
+        info.transcription_start_requested = True
+        self._call_connections[call_connection_id] = info
+        for attempt in range(1, max_retries + 1):
+            try:
+                import time as _t
+                info.transcription_start_attempts = attempt
+                info.transcription_last_start_time = int(_t.time() * 1000)
+                self._call_connections[call_connection_id] = info
+                call_connection = self.acs_client.get_call_connection(call_connection_id)
+                call_connection.start_transcription()
+                info.transcription_started = True
+                info.transcription_last_start_error = None
+                self._call_connections[call_connection_id] = info
+                logger.info(f"Transcription started successfully after attempt {attempt} for call_connection_id={call_connection_id}")
+                return
+            except Exception as e:  # Broad catch; Azure SDK raises HttpResponseError
+                msg = str(e)
+                info.transcription_last_start_error = msg
+                self._call_connections[call_connection_id] = info
+                if "8501" in msg or "not in Established" in msg:
+                    if attempt < max_retries:
+                        sleep_time = backoff * (2 ** (attempt - 1))
+                        logger.warning(f"Call not yet established (8501) for call_connection_id={call_connection_id}; retrying in {sleep_time:.2f}s (attempt {attempt}/{max_retries})")
+                        await _async_sleep(sleep_time)
+                        continue
+                logger.error(f"Failed to start transcription for call_connection_id={call_connection_id} (attempt {attempt}/{max_retries}): {e}")
+                if attempt >= max_retries:
+                    logger.error(f"Exhausted transcription start retries for call_connection_id={call_connection_id}")
+                # Non-retryable or max attempts reached; exit loop
+                break
 
     def join_bot_to_acs_call(self, connection_id: str, bot_info: dict):
         """

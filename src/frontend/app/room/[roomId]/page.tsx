@@ -7,14 +7,9 @@ import { API_BASE } from '@/utils/api';
 import React from 'react';
 
 const LANGUAGE_OPTIONS = [
-  { value: 'en', label: 'English' },
-  { value: 'es', label: 'Spanish' },
-  { value: 'fr', label: 'French' },
-  { value: 'de', label: 'German' },
-  { value: 'pt', label: 'Portuguese' },
-  { value: 'ch', label: 'Chinese' },
-  { value: 'jp', label: 'Japanese' },
-  { value: 'cr', label: 'Corean' },
+  { value: 'en', label: 'Inglês' },
+  { value: 'es', label: 'Espanhol' },
+  { value: 'pt', label: 'Português' },
   // Add more as needed
 ];
 
@@ -25,7 +20,7 @@ export default function RoomPage() {
   console.log('[RoomPage] MOUNT', { roomId });
   const [acsCredentials, setAcsCredentials] = useState<null | { user_id: string; token: string; expires_on: number }>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('pt');
   const [languageConfirmed, setLanguageConfirmed] = useState<boolean>(false);
 
   useEffect(() => {
@@ -81,7 +76,7 @@ export default function RoomPage() {
     <section style={{ height: '100vh', width: '100vw' }}>
       {!languageConfirmed && (
         <div className="p-6 flex flex-col items-center justify-center h-full">
-          <div className="mb-4 text-lg font-semibold">Select your speaking language</div>
+          <div className="mb-4 text-lg font-semibold">Selecione seu idioma</div>
           <select
             className="mb-4 p-2 border rounded"
             value={selectedLanguage}
@@ -95,8 +90,9 @@ export default function RoomPage() {
             className="px-4 py-2 bg-blue-600 text-white rounded"
             onClick={() => setLanguageConfirmed(true)}
           >
-            Join Room
+            Entrar na sala
           </button>
+          <div className="mb-4 text-lg font-semibold">Ao entrar na sala, você concorda com a captura de voz e vídeo para análise do entrevistador</div>
         </div>
       )}
       {languageConfirmed && (

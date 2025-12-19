@@ -56,6 +56,7 @@ The `/ws` endpoint handles real-time audio streaming and translation. For full i
 
 ## Recommendations
 
+- Start the devtunnel with `devtunnel host`;
 - Ensure the `/ws` endpoint registers websockets and invokers with the observer and associates them with the correct call/session for full orchestration.
 - Use the observer and background tasks to ensure robust, scalable, and cost-effective management of all translation and call resources.
 - Follow Azure best practices for security, scalability, and maintainability.

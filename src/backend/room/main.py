@@ -24,15 +24,53 @@ from base64 import b64decode
 
 from starlette.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Body, Path
+from fastapi import Depends
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi_mcp import FastApiMCP
-from typing import List, cast, Literal
+from typing import List, cast, Literal, Dict, Any, Optional
 
 from room import __app__, __author__, __version__, logger
 from room.client import AzureRoomManager
 from room.schemas.models import RoomModel, RoomParticipant
 from azure.communication.identity import CommunicationIdentityClient, CommunicationUserIdentifier, CommunicationTokenScope
 from azure.core.exceptions import ResourceNotFoundError
+
+# --- Analysis Imports ---
+from room.storage.cosmos import CosmosCRUD
+
+# Azure AI / Foundry (chat completion) imports
+from openai import AzureOpenAI
+
+# Environment for Foundry models (already present in .env per user context)
+FOUNDRY_MODEL_ANALYSIS = os.getenv("FOUNDRY_MODEL_ANALYSIS", "")
+FOUNDRY_OPENAI_ENDPOINT = os.getenv("FOUNDRY_OPENAI_ENDPOINT", "")
+FOUNDRY_KEY = os.getenv("FOUNDRY_KEY", "")
+
+def get_azure_client() -> Optional[AzureOpenAI]:
+    if not (FOUNDRY_MODEL_ANALYSIS and FOUNDRY_OPENAI_ENDPOINT and FOUNDRY_KEY):
+        return None
+    try:
+        return AzureOpenAI(
+            api_key=FOUNDRY_KEY,
+            api_version="2024-05-01-preview",
+            azure_endpoint=FOUNDRY_OPENAI_ENDPOINT.rstrip('/')
+        )
+    except Exception as e:
+        logger.warning(f"[analysis] Failed to init AzureOpenAI client: {e}")
+        return None
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def get_transcripts_crud() -> CosmosCRUD:
+    # Expect env var name that stores container id for transcripts
+    return CosmosCRUD("COSMOS_TRANSCRIPTS_DATABASE")
+
+
+@lru_cache(maxsize=1)
+def get_microexp_crud() -> CosmosCRUD:
+    return CosmosCRUD("COSMOS_EXPRESSIONS_DATABASE")
 
 
 tags_metadata: list[dict] = [
@@ -69,7 +107,6 @@ mcp = FastApiMCP(app)
 
 room_manager = AzureRoomManager()
 
-# Initialize ACS Identity Client
 ACS_CONNECTION_STRING = os.getenv("ACS_CONNECTION_STRING")
 if not ACS_CONNECTION_STRING:
     raise RuntimeError("ACS_CONNECTION_STRING environment variable is not set.")
@@ -259,3 +296,146 @@ def create_acs_user():
     except Exception as e:
         logger.error(f"Failed to create ACS user: {e}")
         raise HTTPException(status_code=500, detail="Failed to create ACS user")
+
+
+# ----------------------------------
+# Analysis Endpoints (Phase B)
+# ----------------------------------
+
+@app.get("/analysis/interviews")
+async def list_interviews(
+    transcripts_crud: CosmosCRUD = Depends(get_transcripts_crud),
+    microexp_crud: CosmosCRUD = Depends(get_microexp_crud)
+):
+    """List aggregated interview IDs with flags indicating available analyses.
+
+    Strategy:
+      - Pull all transcript items (lightweight projection if possible future optimization)
+      - Pull all microexpression items
+      - Union by 'id' (or fallback to composite key) producing a list:
+           { id, sessionId?, timestamp?, hasTranscript, hasMicroexpression }
+    """
+    try:
+        transcripts: List[Dict[str, Any]] = []
+        micro: List[Dict[str, Any]] = []
+        try:
+            transcripts = await transcripts_crud.list_items()
+        except Exception as e:
+            logger.warning(f"[analysis] Failed listing transcripts: {e}")
+        try:
+            micro = await microexp_crud.list_items()
+        except Exception as e:
+            logger.warning(f"[analysis] Failed listing microexpressions: {e}")
+
+    except Exception as e:
+        logger.error(f"[analysis] list_interviews fatal: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list interviews")
+
+    index: Dict[str, Dict[str, Any]] = {}
+    for t in transcripts:
+        _id = str(t.get('id') or t.get('sessionId') or t.get('timestamp') or uuid.uuid4())
+        node = index.setdefault(_id, {
+            'id': _id,
+            'sessionId': t.get('sessionId'),
+            'timestamp': t.get('timestamp'),
+            'hasTranscript': False,
+            'hasMicroexpression': False
+        })
+        node['hasTranscript'] = True
+    for m in micro:
+        _id = str(m.get('id') or m.get('sessionId') or m.get('timestamp') or uuid.uuid4())
+        node = index.setdefault(_id, {
+            'id': _id,
+            'sessionId': m.get('sessionId'),
+            'timestamp': m.get('timestamp'),
+            'hasTranscript': False,
+            'hasMicroexpression': False
+        })
+        node['hasMicroexpression'] = True
+
+    # Sort by timestamp desc if available
+    values = list(index.values())
+    values.sort(key=lambda x: x.get('timestamp') or 0, reverse=True)
+    return values
+
+
+@app.get("/analysis/interviews/{interview_id}")
+async def get_interview_detail(
+    interview_id: str,
+    transcripts_crud: CosmosCRUD = Depends(get_transcripts_crud),
+    microexp_crud: CosmosCRUD = Depends(get_microexp_crud)
+):
+    """Retrieve detailed transcript and microexpression documents for a given interview id.
+
+    We attempt to read exact id matches in both containers. If not found, we perform a
+    fallback query scanning for sessionId==interview_id.
+    """
+    async def fetch_single(crud: CosmosCRUD, label: str):
+        # Try direct read first; if fails, fallback query
+        try:
+            return await crud.read_item(interview_id)
+        except Exception:
+            try:
+                items = await crud.list_items(
+                    query="SELECT * FROM c WHERE c.sessionId = @sid",
+                    parameters=[{"name": "@sid", "value": interview_id}]
+                )
+                return items[0] if items else None
+            except Exception as inner:
+                logger.warning(f"[analysis] fetch_single({label}) failed: {inner}")
+                return None
+
+    transcript_doc, micro_doc = await asyncio.gather(
+        fetch_single(transcripts_crud, 'transcript'),
+        fetch_single(microexp_crud, 'micro')
+    )
+
+    status_parts = []
+    if transcript_doc: status_parts.append('transcript')
+    if micro_doc: status_parts.append('micro')
+    status = ' / '.join(status_parts) if status_parts else 'not-found'
+
+    summary: Optional[str] = None
+    if transcript_doc or micro_doc:
+        client = get_azure_client()
+        if client:
+            try:
+                # Build prompt content (truncate if overly large to keep token usage sane)
+                def shrink(obj: Any, limit: int = 4000) -> str:
+                    import json
+                    raw = json.dumps(obj, ensure_ascii=False)[:limit]
+                    return raw
+                transcript_excerpt = shrink(transcript_doc) if transcript_doc else "(no transcript)"
+                micro_excerpt = shrink(micro_doc) if micro_doc else "(no microexpressions)"
+                system_prompt = (
+                    "You are an assistant generating a concise, structured interview analysis. "
+                    "Blend textual transcript themes with emotional/microexpression signals. "
+                    "Return sections: Summary, Key Themes (bullets), Emotional Dynamics, Risks/Concerns, Suggested Follow-ups."
+                )
+                user_content = (
+                    f"TRANSCRIPT DATA:\n{transcript_excerpt}\n\n"
+                    f"MICROEXPRESSIONS DATA:\n{micro_excerpt}\n\n"
+                    f"Generate a synthesized analysis for interview id {interview_id}."
+                )
+                chat = client.chat.completions.create(
+                    model=FOUNDRY_MODEL_ANALYSIS,
+                    temperature=0.4,
+                    max_tokens=600,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
+                    ]
+                )
+                summary = chat.choices[0].message.content if chat and chat.choices else None
+            except Exception as e:
+                logger.warning(f"[analysis] Summarization failed: {e}")
+        else:
+            logger.info("[analysis] Azure OpenAI client not configured; skipping summary")
+
+    return {
+        'id': interview_id,
+        'status': status,
+        'transcript': transcript_doc,
+        'microexpressions': micro_doc,
+        'summary': summary
+    }
